@@ -1,8 +1,9 @@
-import React, {Component} from "react";
-import GraphiQL from "graphiql";
-import fetch from "isomorphic-fetch";
-import "./App.css";
-import "../node_modules/graphiql/graphiql.css";
+import React, {Component} from 'react';
+import GraphiQL from 'graphiql';
+import fetch from 'isomorphic-fetch';
+import { Auth } from 'aws-amplify';
+import './App.css';
+import '../node_modules/graphiql/graphiql.css';
 
 class App extends Component {
 
@@ -25,71 +26,132 @@ class App extends Component {
     }
 
     this.state = {
-      url: parameters.url,
-      token: parameters.token,
       query: parameters.query,
-      variables: parameters.variables
+      variables: parameters.variables,
+      username: false,
+      password: false,
+      authenticatedAs: false
     };
+
+    Auth
+      .currentSession()
+      .then(({ idToken: { payload: { email }}}) => {
+        this.setState({
+          authenticatedAs: email
+        });
+      })
+    ;
   }
 
-  onEditQuery(newQuery) {
-    this.setState({query: newQuery});
-    this.updateURL();
-  }
-
-  onEditVariables(newVariables) {
-    this.setState({variables: newVariables});
-    this.updateURL();
-  }
-
-  onUrlChange(e) {
-    this.setState({url: e.target.value});
-    this.updateURL();
-  }
-
-  onTokenChange(e) {
-    this.setState({token: e.target.value});
-    this.updateURL();
-  }
-
-  updateURL() {
-    var newSearch = '?' + Object.keys(this.state)
-        .map((key) => encodeURIComponent(key) + '=' + encodeURIComponent(this.state[key]))
-        .join('&');
-    history.replaceState(null, null, newSearch);
-  }
-
-  fetcherFactory(url, token) {
-    return function graphQLFetcher(graphQLParams) {
-      return fetch(url + '/graphql', {
-        method: 'post',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(graphQLParams),
-      }).then(response => response.json());
+  onChange = key => value => {
+    if (value.target) {
+      value = value.target.value;
     }
-  }
+
+    this.setState({
+      [key]: value
+    }, () => {
+      this.updateURL();
+    })
+  };
+
+  updateURL = () => {
+    const newSearch = '?' + ['query', 'variables']
+      .map(key => encodeURIComponent(key) + '=' + encodeURIComponent(this.state[key]))
+      .join('&');
+
+    window.history.replaceState(null, null, newSearch);
+  };
+
+  onLogin = () => {
+    Auth.signIn(this.state.username, this.state.password)
+      .then(() => {
+        this.setState({
+          authenticatedAs: this.state.username,
+          username: false,
+          password: false
+        });
+      })
+      .catch(error => {
+        console.error(error);
+      })
+    ;
+  };
+
+  onLogout = () => {
+    Auth.signOut()
+      .then(() => {
+        this.setState({
+          authenticatedAs: false
+        });
+      })
+      .catch(error => {
+        console.error(error);
+      })
+    ;
+  };
+
+  graphQlFetcher = graphQlParams => {
+    if (!this.state.authenticatedAs) {
+      return this.doCall(graphQlParams);
+    }
+
+    return Auth
+      .currentSession()
+      .then(({ accessToken: { jwtToken }}) => {
+        return this.doCall(graphQlParams, jwtToken);
+      })
+    ;
+  };
+
+  doCall = (graphQLParams, jwtToken = false) => {
+    const headers = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    };
+
+    if (jwtToken) {
+      headers['Authorization'] = `Bearer ${jwtToken}`;
+    }
+
+    return fetch(process.env.REACT_APP_GRAPHQL_ENDPOINT_URL, {
+      method: 'post',
+      headers,
+      body: JSON.stringify(graphQLParams),
+    }).then(response => response.json());
+  };
 
   render() {
     return (
       <div className="app">
         <div className="header">
-          <label>url
-            <input type="text" id="url-input" onChange={this.onUrlChange.bind(this)} value={this.state.url}/>
-          </label>
-          <label>token
-            <input type="text" id="token-input" onChange={this.onTokenChange.bind(this)} value={this.state.token}/>
-          </label>
+          {this.state.authenticatedAs && (
+            <span>
+              Logged in as {this.state.authenticatedAs}
+              <button type="button" onClick={this.onLogout}>Logout</button>
+            </span>
+          )}
+          {!this.state.authenticatedAs && (
+            <span>
+              <label>
+                username
+                <input type="text" onChange={this.onChange('username')} value={this.state.username || ''} />
+              </label>
+              <label>
+                username
+                <input type="password" onChange={this.onChange('password')} value={this.state.password || ''} />
+              </label>
+              <button type="button" onClick={this.onLogin}>Login</button>
+            </span>
+          )}
         </div>
-        <div className="body" key={this.state.url}>
-          <GraphiQL fetcher={this.fetcherFactory(this.state.url, this.state.token)}
+        <div className="body">
+          <GraphiQL fetcher={this.graphQlFetcher}
                     query={this.state.query}
                     variables={this.state.variables}
-                    onEditQuery={this.onEditQuery.bind(this)}
-                    onEditVariables={this.onEditVariables.bind(this)}/>
+                    onEditQuery={this.onChange('query')}
+                    onEditVariables={this.onChange('variables')}
+          />
         </div>
       </div>
     );
